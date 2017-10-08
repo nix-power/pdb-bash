@@ -1,0 +1,171 @@
+#!/bin/bash
+
+DBURL='http://pdb1.xiv.ibm.com:8080/pdb/query/v4'
+HEADER="-H 'Accept: application/json'"
+FACTS="facts"
+NODES="nodes"
+PING=`which ping`
+DU='--data-urlencode'
+PRETTY='pretty=true'
+g1hosts=''
+g3hosts=''
+g4hosts=''
+
+progress () {
+  local message=$1
+
+  echo -n "$message"
+
+  while true;
+   do
+    echo -n "."
+    sleep 1
+  done
+}
+
+get_lastreport_time() {
+  local hostname=$1
+  local query="{\"field\": \"receive_time\", \"order\": \"desc\"}, {\"field\": \"receive_time\"}"
+  local t_data=$(curl -sG $HEADER ${DBURL}/reports ${DU} ${PRETTY} $DU "query=[\"=\", \"certname\", \"$hostname\"]" \
+$DU "order_by=[${query}]" $DU 'limit=1' | grep 'receive_time' | awk '{print $3}')
+
+  if [[ -z "$t_data" ]]; then
+    echo "Before 3 days - check puppet agent running/server alive."
+  else
+    local report_utcdate=$(echo $t_data | sed -e 's/[",-]//g; s/T/ /; s/\.[0-9]\+Z/Z/g')
+		# Transformation of UTC time of the report into IDT local time.
+		local reportdate=$(date -d "$report_utcdate")
+		echo "$reportdate"
+  fi
+}
+
+generate_secgroup_arrayas() {
+  g1hosts=$(curl -sG ${HEADER} ${DBURL}/facts ${DU} 'query=["and",["=", "name", "itcsclass"],["=", "value", "1"]]' ${DU} ${PRETTY} \
+| grep certname | sed 's/[":,]//g' | awk '{print $2}')
+
+  g3hosts=$(curl -sG ${HEADER} ${DBURL}/facts ${DU} 'query=["and",["=", "name", "itcsclass"],["=", "value", "3"]]' ${DU} ${PRETTY} \
+| grep certname | sed 's/[":,]//g' | awk '{print $2}')
+
+  g4hosts=$(curl -sG ${HEADER} ${DBURL}/facts ${DU} 'query=["and",["=", "name", "itcsclass"],["=", "value", "4"]]' ${DU} ${PRETTY} \
+| grep certname | sed 's/[":,]//g' | awk '{print $2}')
+}
+
+generate_report() {
+  secgroup=$1
+  hostsarray=$2
+  reports="/pub/reports"
+  report_file=${reports}/g${secgroup}_report.csv
+
+  if [[ -z $secgroup || -z $hostsarray ]]; then
+    echo "Please provide 1,3 or 4 for security group you need generate report for"
+    exit 1
+  fi
+
+  [[ !  -d "$reports" ]] || mkdir -p $reports
+
+  cat /dev/null  > $report_file
+
+  if [[ $secgroup -ne 4 ]]; then
+    echo "Hostname,	IP, Virt/Phys, OS, Release, Owner, Security Owner, Install Date, Environment, Online, Latest Reported, Zabbix Agent, Puppet" >> $report_file
+    echo "" >> $report_file
+  else
+    echo "Hostname,	IP, Virt/Phys, OS, Release, Owner, Install Date, Environment, Online, Latest Reported, Zabbix Agent, Puppet" >> $report_file
+    echo "" >> $report_file
+  fi
+
+  progress "Processing data from PuppetDB, please wait." &
+  local PROGRESS=$!
+  trap "kill -9 $PROGRESS &> /dev/null; cat /dev/null > $report_file; exit 1" INT TERM EXIT
+  
+	for host in $hostsarray; do 
+
+    hostname=$(curl -sG $HEADER  ${DBURL}/nodes/${host}/facts ${DU} ${PRETTY} ${DU} 'query=["=", "name", "hostname"]' \
+| grep value | awk -F: '{print $2}'| sed 's/[ ",]//g')
+
+    ipaddress=$(curl -sG $HEADER ${DBURL}/nodes/${host}/facts ${DU} ${PRETTY} ${DU} 'query=["~", "name", "ipaddress"]' \
+| grep value | grep ': \+"9\.[0-9]\{1,3\}' | sed 's/[":,]//g' | awk '{print $2}' | tail -n 1)
+
+    os=$(curl -sG $HEADER ${DBURL}/nodes/${host}/facts ${DU} ${PRETTY} ${DU} 'query=["=", "name", "operatingsystem"]' \
+| grep value | sed 's/[":,]//g' | awk '{print $2}')
+
+    osrelease=$(curl -sG $HEADER  ${DBURL}/nodes/${host}/facts ${DU} ${PRETTY} ${DU} 'query=["=", "name", "operatingsystemrelease"]' \
+| grep value | sed 's/[":,]//g' | awk '{print $2}')
+
+    machineowner=$(curl -sG $HEADER  ${DBURL}/nodes/${host}/facts ${DU} ${PRETTY} ${DU} 'query=["=", "name", "machineowner"]' \
+| grep value | sed 's/[":,]//g' | awk '{print $2}')
+
+    securityowner=$(curl -sG $HEADER  ${DBURL}/nodes/${host}/facts ${DU} ${PRETTY} ${DU} 'query=["=", "name", "securityowner"]' \
+| grep value | sed 's/[":,]//g' | awk '{print $2}')
+
+    instdate=$(curl -sG $HEADER  ${DBURL}/nodes/${host}/facts ${DU} ${PRETTY} ${DU} 'query=["=", "name", "osinstalldate"]' \
+| grep value | sed 's/[":,]//g' | awk '{print $2}')
+
+    isvirtual=$(curl -sG $HEADER  ${DBURL}/nodes/${host}/facts ${DU} ${PRETTY} ${DU} 'query=["=", "name", "is_virtual"]' \
+| grep value | sed 's/[":,]//g' | awk '{print $2}')
+
+    puppetenv=$(curl -sG $HEADER  ${DBURL}/nodes/${host}/facts ${DU} ${PRETTY} ${DU} 'query=["=", "name", "puppetenv"]' \
+| grep value | sed 's/[":,]//g' | awk '{print $2}')
+
+    if [[ "$isvirtual" == "true" ]]; then
+      isvirtual="Virtual"
+    else
+      isvirtual="Physical"
+    fi
+
+    # Sometimes fact for default ipaddress can be not in power nine network ( when several interfaces connected'.
+    # So we will chceck ping to hostname only in cases when facter did not determine primary ip address of the host correctly.
+
+    $PING -qc 1 -w 1 $ipaddress > /dev/null 2>&1
+
+    if [[ $? -eq 0 ]]; then
+      ping="Yes"		
+    else
+      ping="Not Pingable"
+    fi
+
+    latestreport=$(get_lastreport_time $host)
+
+    zabbixagent=$(curl -sG $HEADER ${DBURL}/nodes/${host}/facts ${DU} ${PRETTY} ${DU} 'query=["=", "name", "zabbixagent"]' \
+| grep value | sed 's/[":,]//g' | awk '{print $2}')
+
+    pver=$(curl -sG $HEADER ${DBURL}/nodes/${host}/facts ${DU} ${PRETTY} ${DU} 'query=["=", "name", "puppetversion"]'  \
+| grep value | sed 's/[":,]//g' | awk '{print $2}')
+    
+    if [ $secgroup -ne 4 ]; then
+      echo $host, $ipaddress, $isvirtual, $os, $osrelease, $machineowner, $securityowner, $instdate, $puppetenv, $ping, $latestreport, "zabbix: $zabbixagent", $pver >> $report_file
+    else
+      echo $host, $ipaddress, $isvirtual, $os, $osrelease, $machineowner, $instdate, $puppetenv, $ping, $latestreport, "zabbix: $zabbixagent", $pver >> $report_file
+    fi
+  done
+
+  kill $PROGRESS &> /dev/null
+
+  echo -e "\nDone."
+  sleep 2
+  trap - INT TERM EXIT
+}
+
+main() {
+  echo "After processing, reports will be available at /pub/reports"
+  sleep 1
+
+  generate_secgroup_arrayas
+  echo -e  "\nGenerating report for Security G1 hosts"
+    sleep 1
+  generate_report 1 "$g1hosts"
+  echo -e "\nGenerating report for Security G3 hosts"
+    sleep 1
+  generate_report 3 "$g3hosts"
+  echo -e "\nGenerating report for Security G4 hosts"
+    sleep 1
+  generate_report 4 "$g4hosts"
+  exit 0
+}
+
+main $@
+#cat g1machines-onwers  | sed -e 's/[",}{]//g; /^ \+name\s\+:.*/d; 1d; $d; s/^ \+// '
+#curl -s -X GET  -H 'Accept: application/json'  http://pgdb1.xiv.ibm.com/v3/nodes --data-urlencode 'query=["and",["=", ["fact", "operatingsystem"], "Ubuntu"],["<", ["fact", "lsbmajdistrelease"], 14]]'
+#curl -s -X GET -H 'Accept: application/json' http://pgdb1.xiv.ibm.com/v3/facts --data-urlencode 'query=["and",["=", "name", "itcsclass"],["=", "value", "1"]]'
+#curl -s -X GET -H 'Accept: application/json' http://pgdb1.xiv.ibm.com/v3/facts --data-urlencode 'query=["and",["=", "name", "itcsclass"],["=", "value", "3"]]'
+#curl -s -X GET -H 'Accept: application/json' http://pgdb1.xiv.ibm.com/v3/facts --data-urlencode 'query=["and",["=", "name", "itcsclass"],["=", "value", "4"]]'
+#curl -s -X GET -H 'Accept: application/json' http://pgdb1.xiv.ibm.com/v3/facts --data-urlencode 'query=["=", "name", "machineowner"]'
