@@ -1,6 +1,6 @@
 #!/bin/bash
 
-DBURL='http://pdb1.xiv.ibm.com:8080/pdb/query/v4'
+DBURL='http://pdb1.linuxdevops.com:8080/pdb/query/v4'
 HEADER="-H 'Accept: application/json'"
 FACTS="facts"
 NODES="nodes"
@@ -164,8 +164,3 @@ main() {
 
 main $@
 #cat g1machines-onwers  | sed -e 's/[",}{]//g; /^ \+name\s\+:.*/d; 1d; $d; s/^ \+// '
-#curl -s -X GET  -H 'Accept: application/json'  http://pgdb1.xiv.ibm.com/v3/nodes --data-urlencode 'query=["and",["=", ["fact", "operatingsystem"], "Ubuntu"],["<", ["fact", "lsbmajdistrelease"], 14]]'
-#curl -s -X GET -H 'Accept: application/json' http://pgdb1.xiv.ibm.com/v3/facts --data-urlencode 'query=["and",["=", "name", "itcsclass"],["=", "value", "1"]]'
-#curl -s -X GET -H 'Accept: application/json' http://pgdb1.xiv.ibm.com/v3/facts --data-urlencode 'query=["and",["=", "name", "itcsclass"],["=", "value", "3"]]'
-#curl -s -X GET -H 'Accept: application/json' http://pgdb1.xiv.ibm.com/v3/facts --data-urlencode 'query=["and",["=", "name", "itcsclass"],["=", "value", "4"]]'
-#curl -s -X GET -H 'Accept: application/json' http://pgdb1.xiv.ibm.com/v3/facts --data-urlencode 'query=["=", "name", "machineowner"]'
